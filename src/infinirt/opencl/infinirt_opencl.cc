@@ -1,0 +1,275 @@
+#include "infinirt_opencl.h"
+#include "../../utils.h"
+#include <CL/cl.h>
+#include <mutex>
+#include <vector>
+
+#define CHECK_CLRT(RT_API) CHECK_INTERNAL(RT_API, CL_SUCCESS)
+
+static std::mutex init_mutex;
+static cl_platform_id platform = nullptr;
+static cl_context context = nullptr;
+static std::vector<cl_device_id> devices;
+static std::vector<std::vector<cl_command_queue>> queues;
+static std::vector<size_t> max_mem_alloc_size; // 新添加，待测试
+static cl_uint device_count = 0;
+static bool initialized = false;
+thread_local int CUR_DEV_ID = 0;
+struct InfinirtEventStruct {
+    cl_event ev = nullptr;
+    bool bound = false; // 是否已经绑定真实 cl_event
+};
+
+namespace infinirt::opencl {
+static void cleanupResources() {
+    // 依次检查队列、上下文、设备、平台
+    // 依次清理
+    if (!queues.empty()) {
+        for (auto &qvec : queues) {
+            for (auto q : qvec) {
+                if (q) {
+                    clReleaseCommandQueue(q);
+                }
+            }
+            qvec.clear();
+        }
+        queues.clear();
+    }
+    if (context) {
+        clReleaseContext(context);
+        context = nullptr;
+    }
+    devices.clear();
+    max_mem_alloc_size.clear();
+    device_count = 0;
+    platform = nullptr;
+    initialized = false;
+}
+infiniStatus_t init() {
+    std::lock_guard<std::mutex> lk(init_mutex);
+    if (initialized) {
+        return INFINI_STATUS_SUCCESS;
+    }
+    cl_int err = CL_SUCCESS;
+    cl_uint num_platforms = 0;
+    err = clGetPlatformIDs(1, nullptr, &num_platforms);
+    if (err != CL_SUCCESS) {
+        cleanupResources();
+        return INFINI_STATUS_DEVICE_NOT_INITIALIZED;
+    }
+    if (num_platforms == 0) {
+        return INFINI_STATUS_DEVICE_NOT_FOUND;
+    }
+    err = clGetPlatformIDs(1, &platform, nullptr);
+    if (err != CL_SUCCESS) {
+        cleanupResources();
+        return INFINI_STATUS_DEVICE_NOT_INITIALIZED;
+    }
+    err = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 0, nullptr, &device_count);
+    if (err != CL_SUCCESS) {
+        cleanupResources();
+        return INFINI_STATUS_DEVICE_NOT_INITIALIZED;
+    }
+    if (device_count == 0) {
+        return INFINI_STATUS_DEVICE_NOT_FOUND;
+    }
+    devices.resize(static_cast<size_t>(device_count));
+    max_mem_alloc_size.resize(static_cast<size_t>(device_count));
+    err = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, device_count, devices.data(), nullptr);
+    if (err != CL_SUCCESS) {
+        cleanupResources();
+        return INFINI_STATUS_DEVICE_NOT_INITIALIZED;
+    }
+    context = clCreateContext(nullptr, device_count, devices.data(), nullptr, nullptr, &err);
+    if (err != CL_SUCCESS) {
+        cleanupResources();
+        return INFINI_STATUS_DEVICE_NOT_INITIALIZED;
+    }
+
+    // queues.resize(static_cast<size_t>(device_count));// 初始化阶段不创建具体的队列，后续有接口单独创建队列
+    queues.resize(static_cast<size_t>(device_count)); // 每个设备一个初始队列
+    for (cl_uint i = 0; i < device_count; ++i) {
+        cl_command_queue q = clCreateCommandQueueWithProperties(context, devices[i], nullptr, &err);
+        if (err != CL_SUCCESS) {
+            // 清理已创建的队列和 context
+            cleanupResources();
+            return INFINI_STATUS_DEVICE_NOT_INITIALIZED;
+        }
+        queues[i].push_back(q); // 初始队列作为默认队列在 index 0
+        cl_ulong max_alloc_size = 0;
+        clGetDeviceInfo(devices[i], CL_DEVICE_MAX_MEM_ALLOC_SIZE, sizeof(max_alloc_size), &max_alloc_size, nullptr);
+        max_mem_alloc_size[i] = static_cast<size_t>(max_alloc_size);
+    }
+    initialized = true;
+    return INFINI_STATUS_SUCCESS;
+}
+
+infiniStatus_t getDeviceCount(int *count) { // 空指针会在上层检查--这里再加一次检查，规范
+    if (!count) {
+        return INFINI_STATUS_BAD_PARAM;
+    }
+    std::lock_guard<std::mutex> lk(init_mutex); // 如果上层能保证只有一个线程调用，这个可以去掉；
+    if (!initialized) {
+        return INFINI_STATUS_DEVICE_NOT_INITIALIZED;
+    }
+    *count = static_cast<int>(device_count);
+    return INFINI_STATUS_SUCCESS;
+}
+
+infiniStatus_t setDevice(int device_id) {
+    std::lock_guard<std::mutex> lk(init_mutex);
+    if (!initialized) {
+        return INFINI_STATUS_DEVICE_NOT_INITIALIZED;
+    }
+    if (device_id < 0 || device_id >= static_cast<int>(device_count)) {
+        return INFINI_STATUS_DEVICE_NOT_FOUND;
+    }
+    CUR_DEV_ID = device_id;
+    return INFINI_STATUS_SUCCESS;
+}
+
+infiniStatus_t deviceSynchronize() {
+    for (auto &q : queues[CUR_DEV_ID]) {
+        if (q) {
+            CHECK_CLRT(clFinish(q));
+        }
+    }
+    return INFINI_STATUS_SUCCESS;
+}
+
+infiniStatus_t streamCreate(infinirtStream_t *stream_ptr) {
+    cl_int err;
+    cl_command_queue queue = clCreateCommandQueueWithProperties(context, devices[CUR_DEV_ID], nullptr, &err);
+    CHECK_CLRT(err);
+    {
+        std::lock_guard<std::mutex> lk(init_mutex);
+        queues[CUR_DEV_ID].push_back(queue);
+    }
+    *stream_ptr = queue;
+    return INFINI_STATUS_SUCCESS;
+}
+
+infiniStatus_t streamDestroy(infinirtStream_t stream) {
+    {
+        std::lock_guard<std::mutex> lk(init_mutex);
+        auto &qvec = queues[CUR_DEV_ID];
+        auto it = std::find(qvec.begin(), qvec.end(), (cl_command_queue)stream);
+        if (it != qvec.end()) {
+            qvec.erase(it);
+        }
+    }
+    CHECK_CLRT(clReleaseCommandQueue((cl_command_queue)stream));
+    return INFINI_STATUS_SUCCESS;
+}
+
+infiniStatus_t streamSynchronize(infinirtStream_t stream) {
+    CHECK_CLRT(clFinish((cl_command_queue)stream));
+    return INFINI_STATUS_SUCCESS;
+}
+
+infiniStatus_t streamWaitEvent(infinirtStream_t stream, infinirtEvent_t event) {
+    InfinirtEventStruct *evs = static_cast<InfinirtEventStruct *>(event);
+    CHECK_CLRT(clWaitForEvents(1, &evs->ev));
+    return INFINI_STATUS_SUCCESS;
+}
+
+infiniStatus_t eventCreate(infinirtEvent_t *event_ptr) {
+    InfinirtEventStruct *event = new InfinirtEventStruct();
+    *event_ptr = static_cast<infinirtEvent_t>(event);
+    return INFINI_STATUS_SUCCESS;
+}
+
+infiniStatus_t eventRecord(infinirtEvent_t event, infinirtStream_t stream) {
+    InfinirtEventStruct *evs = static_cast<InfinirtEventStruct *>(event);
+    CHECK_CLRT(clEnqueueMarkerWithWaitList((cl_command_queue)stream, 0, nullptr, &evs->ev));
+    evs->bound = true;
+    return INFINI_STATUS_SUCCESS;
+}
+
+infiniStatus_t eventQuery(infinirtEvent_t event, infinirtEventStatus_t *status_ptr) {
+    InfinirtEventStruct *evs = static_cast<InfinirtEventStruct *>(event);
+    if (!evs->ev) {
+        return INFINI_STATUS_INTERNAL_ERROR;
+    }
+    cl_int status;
+    CHECK_CLRT(clGetEventInfo(evs->ev, CL_EVENT_COMMAND_EXECUTION_STATUS, sizeof(cl_int), &status, nullptr));
+    if (status == CL_COMPLETE) {
+        *status_ptr = INFINIRT_EVENT_COMPLETE;
+    } else {
+        *status_ptr = INFINIRT_EVENT_NOT_READY;
+    }
+    return INFINI_STATUS_SUCCESS;
+}
+
+infiniStatus_t eventSynchronize(infinirtEvent_t event) {
+    InfinirtEventStruct *evs = static_cast<InfinirtEventStruct *>(event);
+    if (!evs->ev) {
+        return INFINI_STATUS_INTERNAL_ERROR;
+    }
+    CHECK_CLRT(clWaitForEvents(1, &evs->ev));
+    return INFINI_STATUS_SUCCESS;
+}
+
+infiniStatus_t eventDestroy(infinirtEvent_t event) {
+    InfinirtEventStruct *evs = static_cast<InfinirtEventStruct *>(event);
+    if (!evs->ev) {
+        return INFINI_STATUS_INTERNAL_ERROR;
+    }
+    CHECK_CLRT(clReleaseEvent(evs->ev));
+    evs->ev = nullptr;
+    delete evs;
+    return INFINI_STATUS_SUCCESS;
+}
+
+infiniStatus_t mallocDevice(void **p_ptr, size_t size) {
+    if (size > max_mem_alloc_size[CUR_DEV_ID]) {
+        return INFINI_STATUS_BAD_PARAM; // 新添加，待测试
+    }
+    void *p = clSVMAlloc(context, CL_MEM_READ_WRITE, size, 0);
+    if (!p) {
+        return INFINI_STATUS_NULL_POINTER;
+    }
+    *p_ptr = p;
+    return INFINI_STATUS_SUCCESS;
+}
+
+infiniStatus_t mallocHost(void **p_ptr, size_t size) {
+    if (size > max_mem_alloc_size[CUR_DEV_ID]) {
+        return INFINI_STATUS_BAD_PARAM; // 新添加，待测试
+    }
+    void *p = clSVMAlloc(context, CL_MEM_READ_WRITE, size, 0);
+    if (!p) {
+        return INFINI_STATUS_NULL_POINTER;
+    }
+    *p_ptr = p;
+    return INFINI_STATUS_SUCCESS;
+}
+
+infiniStatus_t freeDevice(void *ptr) {
+    clSVMFree(context, ptr);
+    return INFINI_STATUS_SUCCESS;
+}
+
+infiniStatus_t freeHost(void *ptr) {
+    clSVMFree(context, ptr);
+    return INFINI_STATUS_SUCCESS;
+}
+
+infiniStatus_t memcpy(void *dst, const void *src, size_t size, infinirtMemcpyKind_t kind) {
+    cl_command_queue default_queue = queues[CUR_DEV_ID][0];
+    CHECK_CLRT(clEnqueueSVMMemcpy(default_queue, CL_TRUE, dst, src, size, 0, nullptr, nullptr));
+    return INFINI_STATUS_SUCCESS;
+}
+
+infiniStatus_t memcpyAsync(void *dst, const void *src, size_t size, infinirtMemcpyKind_t kind, infinirtStream_t stream) {
+    CHECK_CLRT(clEnqueueSVMMemcpy((cl_command_queue)stream, CL_FALSE, dst, src, size, 0, nullptr, nullptr));
+    return INFINI_STATUS_SUCCESS;
+}
+infiniStatus_t mallocAsync(void **p_ptr, size_t size, infinirtStream_t stream) {
+    return INFINI_STATUS_INTERNAL_ERROR;
+}
+
+infiniStatus_t freeAsync(void *ptr, infinirtStream_t stream) {
+    return INFINI_STATUS_INTERNAL_ERROR;
+}
+} // namespace infinirt::opencl
