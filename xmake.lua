@@ -156,6 +156,18 @@ if has_config("ninetoothed") then
     add_defines("ENABLE_NINETOOTHED")
 end
 
+-- OpenCL
+option("opencl")
+    set_default(false)
+    set_showmenu(true)
+    set_description("Whether to compile implementations for OpenCL backend")
+option_end()
+
+if has_config("opencl") then
+    add_defines("ENABLE_OPENCL_API")
+    includes("xmake/opencl.lua")
+end
+
 -- InfiniCCL
 option("ccl")
     set_default(false)
@@ -216,6 +228,9 @@ target("infinirt")
     end
     if has_config("kunlun-xpu") then
         add_deps("infinirt-kunlun")
+    end
+    if has_config("opencl") then
+        add_deps("infinirt-opencl")
     end
     set_languages("cxx17")
     set_installdir(os.getenv("INFINI_ROOT") or (os.getenv(is_host("windows") and "HOMEPATH" or "HOME") .. "/.infini"))
