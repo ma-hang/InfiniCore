@@ -272,4 +272,34 @@ infiniStatus_t mallocAsync(void **p_ptr, size_t size, infinirtStream_t stream) {
 infiniStatus_t freeAsync(void *ptr, infinirtStream_t stream) {
     return INFINI_STATUS_INTERNAL_ERROR;
 }
+infiniStatus_t getOpenclDevice(infinirtOpenclDevice_t *cl_device) {
+    if (cl_device == nullptr) {
+        return INFINI_STATUS_NULL_POINTER;
+    }
+    *cl_device = static_cast<infinirtOpenclDevice_t>(devices[CUR_DEV_ID]);
+    return INFINI_STATUS_SUCCESS;
+}
+infiniStatus_t getOpenclContext(infinirtOpenclContext_t *cl_context) {
+    if (cl_context == nullptr) {
+        return INFINI_STATUS_NULL_POINTER;
+    }
+    *cl_context = static_cast<infinirtOpenclContext_t>(context);
+    return INFINI_STATUS_SUCCESS;
+}
+infiniStatus_t getOpenclStream(infinirtOpenclStream_t *cl_queue) {
+    if (cl_queue == nullptr) {
+        return INFINI_STATUS_NULL_POINTER;
+    }
+    *cl_queue = static_cast<infinirtOpenclStream_t>(queues[CUR_DEV_ID][0]);
+    return INFINI_STATUS_SUCCESS;
+}
 } // namespace infinirt::opencl
+__C infiniStatus_t infinirtGetOpenclDevice(infinirtOpenclDevice_t *cl_device) {
+    return infinirt::opencl::getOpenclDevice(cl_device);
+}
+__C infiniStatus_t infinirtGetOpenclContext(infinirtOpenclContext_t *cl_context) {
+    return infinirt::opencl::getOpenclContext(cl_context);
+}
+__C infiniStatus_t infinirtGetOpenclStream(infinirtOpenclStream_t *cl_queue) {
+    return infinirt::opencl::getOpenclStream(cl_queue);
+}

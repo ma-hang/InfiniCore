@@ -165,6 +165,7 @@ option_end()
 
 if has_config("opencl") then
     add_defines("ENABLE_OPENCL_API")
+    add_defines("INTEL")
     includes("xmake/opencl.lua")
 end
 
@@ -280,6 +281,9 @@ target("infiniop")
     end
     if has_config("kunlun-xpu") then
         add_deps("infiniop-kunlun")
+    end
+    if has_config("opencl") then
+        add_deps("infiniop-opencl")
     end
     set_languages("cxx17")
     add_files("src/infiniop/devices/handle.cc")

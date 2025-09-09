@@ -294,6 +294,11 @@ def get_args():
         action="store_true",
         help="Run KUNLUN XPU test",
     )
+    parser.add_argument(
+        "--opencl",
+        action="store_true",
+        help="Run OPENCL test",
+    )
 
     return parser.parse_args()
 
@@ -598,6 +603,9 @@ def get_test_devices(args):
         import torch_xmlir
 
         devices_to_test.append(InfiniDeviceEnum.KUNLUN)
+    if args.opencl:
+
+        devices_to_test.append(InfiniDeviceEnum.OPENCL)
     if not devices_to_test:
         devices_to_test = [InfiniDeviceEnum.CPU]
 
@@ -609,6 +617,12 @@ def get_sync_func(device):
 
     if device == InfiniDeviceEnum.CPU or device == InfiniDeviceEnum.CAMBRICON:
         sync = None
+    elif device == InfiniDeviceEnum.OPENCL:
+
+        def opencl_sync():
+            LIBINFINIOP.infinirtDeviceSynchronize()
+
+        return opencl_sync
     else:
         sync = getattr(torch, torch_device_map[device]).synchronize
 

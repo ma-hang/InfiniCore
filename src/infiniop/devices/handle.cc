@@ -23,6 +23,9 @@
 #ifdef ENABLE_METAX_API
 #include "metax/metax_handle.h"
 #endif
+#ifdef ENABLE_OPENCL_API
+#include "opencl/opencl_handle.h"
+#endif
 
 __C infiniStatus_t infiniopCreateHandle(infiniopHandle_t *handle_ptr) {
     if (handle_ptr == nullptr) {
@@ -61,6 +64,9 @@ __C infiniStatus_t infiniopCreateHandle(infiniopHandle_t *handle_ptr) {
 #endif
 #ifdef ENABLE_METAX_API
         CREATE(INFINI_DEVICE_METAX, metax);
+#endif
+#ifdef ENABLE_OPENCL_API
+        CREATE(INFINI_DEVICE_OPENCL, opencl);
 #endif
 
     default:
@@ -101,6 +107,9 @@ __C infiniStatus_t infiniopDestroyHandle(infiniopHandle_t handle) {
 #endif
 #ifdef ENABLE_METAX_API
         DELETE(INFINI_DEVICE_METAX, metax);
+#endif
+#ifdef ENABLE_OPENCL_API
+        DELETE(INFINI_DEVICE_OPENCL, opencl);
 #endif
     default:
         return INFINI_STATUS_DEVICE_TYPE_NOT_SUPPORTED;
