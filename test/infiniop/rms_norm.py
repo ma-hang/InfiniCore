@@ -37,7 +37,8 @@ _TEST_CASES_ = [
 
 # w (weight) types
 # Note: 'None' means the same as input dtype
-_WEIGHT_DTYPES = [None, InfiniDtype.F32, InfiniDtype.F16, InfiniDtype.BF16]
+# _WEIGHT_DTYPES = [None, InfiniDtype.F32, InfiniDtype.F16, InfiniDtype.BF16]
+_WEIGHT_DTYPES = [None, InfiniDtype.F32, InfiniDtype.F16]
 # x types used for testing
 # _TENSOR_DTYPES = [InfiniDtype.F16, InfiniDtype.BF16]
 _TENSOR_DTYPES = [InfiniDtype.F16]

@@ -79,7 +79,13 @@ class TestTensor(CTensor):
                 torch_shape, dtype=to_torch_dtype(dt), device=torch_device_map[device]
             )
         elif mode == "randint":
-            self._torch_tensor = torch.randint(-2000000000,2000000000, torch_shape,dtype=to_torch_dtype(dt), device=torch_device_map[device])
+            self._torch_tensor = torch.randint(
+                -2000000000,
+                2000000000,
+                torch_shape,
+                dtype=to_torch_dtype(dt),
+                device=torch_device_map[device],
+            )
         elif mode == "manual":
             assert set_tensor is not None
             assert torch_shape == list(set_tensor.shape)
@@ -545,7 +551,8 @@ def test_operator(device, test_func, test_cases, tensor_dtypes):
         to be passed to `test_func`.
     - tensor_dtypes (list): A list of tensor data types (e.g., `torch.float32`) to test.
     """
-    LIBINFINIOP.infinirtSetDevice(device, ctypes.c_int(0))
+    check_error(LIBINFINIOP.infinirtInit())
+    check_error(LIBINFINIOP.infinirtSetDevice(device, ctypes.c_int(0)))
     handle = create_handle()
     tensor_dtypes = filter_tensor_dtypes_by_device(device, tensor_dtypes)
     try:
